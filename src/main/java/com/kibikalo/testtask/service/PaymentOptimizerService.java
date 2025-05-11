@@ -5,243 +5,257 @@ import com.kibikalo.testtask.model.PaymentMethod;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 import java.util.stream.Collectors;
 
 public class PaymentOptimizerService {
 
-    private final PaymentProcessor paymentProcessor;
-    private final Map<String, PaymentMethod> paymentMethodsMap; // Keep a reference to the payment methods
+    private final List<Order> orders;
+    private final Map<String, PaymentMethod> initialPaymentMethods; // Original limits
+    private final PaymentProcessor paymentProcessor; // For discount calculations
+
+    private BigDecimal maxTotalDiscountFound = BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+    private List<PaymentAssignment> bestPaymentAssignments = null;
+    private BigDecimal maxPointsUsedWithMaxDiscount = BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+
 
     // Constants
     private static final String POINTS_PAYMENT_METHOD_ID = "PUNKTY";
-    private static final BigDecimal MIN_PARTIAL_POINTS_PERCENTAGE = new BigDecimal("0.10"); // 10%
+    private static final BigDecimal MIN_PARTIAL_POINTS_PERCENTAGE = new BigDecimal("0.10");
+    private static final int SCALE = 2;
+    private static final RoundingMode ROUNDING_MODE = RoundingMode.HALF_UP;
 
-    public PaymentOptimizerService(PaymentProcessor paymentProcessor, Map<String, PaymentMethod> paymentMethodsMap) {
-        this.paymentProcessor = paymentProcessor;
-        this.paymentMethodsMap = paymentMethodsMap;
+    // Helper class to store how an order was paid
+    private static class PaymentAssignment {
+        String orderId;
+        String traditionalMethodId; // null if only points
+        BigDecimal amountPaidWithPoints;
+        BigDecimal amountPaidWithTraditional;
+        BigDecimal discountApplied;
+
+        PaymentAssignment(String orderId, String traditionalMethodId, BigDecimal amountPaidWithPoints, BigDecimal amountPaidWithTraditional, BigDecimal discountApplied) {
+            this.orderId = orderId;
+            this.traditionalMethodId = traditionalMethodId;
+            this.amountPaidWithPoints = amountPaidWithPoints.setScale(SCALE, ROUNDING_MODE);
+            this.amountPaidWithTraditional = amountPaidWithTraditional.setScale(SCALE, ROUNDING_MODE);
+            this.discountApplied = discountApplied.setScale(SCALE, ROUNDING_MODE);
+        }
+
+        @Override
+        public String toString() {
+            return "Order: " + orderId +
+                    (traditionalMethodId != null ? ", Traditional: " + traditionalMethodId + " (" + amountPaidWithTraditional + ")" : "") +
+                    (amountPaidWithPoints.compareTo(BigDecimal.ZERO) > 0 ? ", Points: " + amountPaidWithPoints : "") +
+                    ", Discount: " + discountApplied;
+        }
     }
 
-    /**
-     * Finds and applies an optimal payment strategy for a list of orders
-     * to maximize total discount, using a greedy approach.
-     *
-     * @param orders The list of orders to process.
-     * @return A list of orders that could not be fully paid (should be empty in a successful run).
-     */
-    public List<Order> optimizePayments(List<Order> orders) {
-        // Work on a copy of the orders list to avoid modifying the original input if needed elsewhere
-        List<Order> unpaidOrders = new ArrayList<>(orders);
-        List<Order> paidOrders = new ArrayList<>();
 
-        System.out.println("\n--- Starting Payment Optimization ---");
+    public PaymentOptimizerService(List<Order> orders, Map<String, PaymentMethod> paymentMethods, PaymentProcessor paymentProcessor) {
+        // Sort orders initially - might help prune branches or find good solutions faster
+        this.orders = new ArrayList<>(orders);
+        this.orders.sort(Comparator.comparing(Order::getValue).reversed());
 
-        // Step 1: Prioritize Bank Card Discounts
-        System.out.println("--- Step 1: Prioritizing Bank Card Discounts ---");
-        // Filter orders that *might* be eligible for a bank discount and are currently unpaid
-        List<Order> ordersWithBankPromos = unpaidOrders.stream()
-                .filter(order -> order.getPromotions() != null && !order.getPromotions().isEmpty() &&
-                        order.getPromotions().stream().anyMatch(promoId ->
-                                !POINTS_PAYMENT_METHOD_ID.equals(promoId) && paymentMethodsMap.containsKey(promoId)))
-                .collect(Collectors.toList());
+        this.initialPaymentMethods = new HashMap<>();
+        // Create deep copies of payment methods to manage their state independently
+        for (Map.Entry<String, PaymentMethod> entry : paymentMethods.entrySet()) {
+            PaymentMethod original = entry.getValue();
+            PaymentMethod copy = new PaymentMethod();
+            copy.setId(original.getId());
+            copy.setDiscount(original.getDiscount());
+            copy.setLimit(original.getLimit()); // This also sets remainingLimit
+            this.initialPaymentMethods.put(entry.getKey(), copy);
+        }
+        this.paymentProcessor = paymentProcessor; // Used for discount calculations
+    }
 
-        // Sort these orders by potential bank discount (descending)
-        ordersWithBankPromos.sort(Comparator.comparing(this::calculateMaxBankDiscountForOrder).reversed());
+    public Map<String, BigDecimal> solve() {
+        System.out.println("\n--- Starting Backtracking Payment Optimization ---");
+        // Create a mutable copy of payment methods for the recursive calls
+        Map<String, PaymentMethod> currentPaymentMethodsState = new HashMap<>();
+        for (Map.Entry<String, PaymentMethod> entry : initialPaymentMethods.entrySet()) {
+            PaymentMethod original = entry.getValue();
+            PaymentMethod copy = new PaymentMethod();
+            copy.setId(original.getId());
+            copy.setDiscount(original.getDiscount());
+            copy.setLimit(original.getLimit()); // This also sets remainingLimit
+            currentPaymentMethodsState.put(entry.getKey(), copy);
+        }
 
-        List<Order> fullyPaidInStep1 = new ArrayList<>();
-        for (Order order : ordersWithBankPromos) {
-            if (paidOrders.contains(order)) {
-                continue; // Already paid by a previous decision
+        backtrack(0, currentPaymentMethodsState, new ArrayList<>(), BigDecimal.ZERO, BigDecimal.ZERO);
+
+        if (bestPaymentAssignments == null) {
+            System.err.println("Backtracking: No solution found to pay all orders.");
+            return new HashMap<>();
+        }
+
+        System.out.println("\nBacktracking: Best solution found with total discount: " + maxTotalDiscountFound);
+        System.out.println("Points used in best solution: " + maxPointsUsedWithMaxDiscount);
+        bestPaymentAssignments.forEach(System.out::println);
+
+        // Reconstruct the final payment totals map from bestPaymentAssignments
+        Map<String, BigDecimal> finalTotals = new HashMap<>();
+        initialPaymentMethods.keySet().forEach(id -> finalTotals.put(id, BigDecimal.ZERO.setScale(SCALE, ROUNDING_MODE)));
+
+        for (PaymentAssignment assignment : bestPaymentAssignments) {
+            if (assignment.amountPaidWithPoints.compareTo(BigDecimal.ZERO) > 0) {
+                finalTotals.merge(POINTS_PAYMENT_METHOD_ID, assignment.amountPaidWithPoints, BigDecimal::add);
             }
+            if (assignment.traditionalMethodId != null && assignment.amountPaidWithTraditional.compareTo(BigDecimal.ZERO) > 0) {
+                finalTotals.merge(assignment.traditionalMethodId, assignment.amountPaidWithTraditional, BigDecimal::add);
+            }
+        }
+        return finalTotals;
+    }
 
-            BigDecimal bestDiscount = BigDecimal.ZERO;
-            String bestMethodId = null;
+    private void backtrack(int orderIndex,
+                           Map<String, PaymentMethod> currentMethodsState,
+                           List<PaymentAssignment> currentAssignments,
+                           BigDecimal currentTotalDiscount,
+                           BigDecimal currentTotalPointsUsed) {
 
-            // Find the best applicable bank card discount for this specific order
-            if (order.getPromotions() != null) {
-                for (String promoId : order.getPromotions()) {
-                    if (!POINTS_PAYMENT_METHOD_ID.equals(promoId) && paymentMethodsMap.containsKey(promoId)) {
-                        BigDecimal currentDiscount = paymentProcessor.calculateFullTraditionalPaymentDiscount(order, promoId);
-                        if (currentDiscount.compareTo(bestDiscount) > 0) {
-                            bestDiscount = currentDiscount;
-                            bestMethodId = promoId;
+        // Base Case: All orders processed
+        if (orderIndex == orders.size()) {
+            if (currentTotalDiscount.compareTo(maxTotalDiscountFound) > 0) {
+                maxTotalDiscountFound = currentTotalDiscount;
+                bestPaymentAssignments = new ArrayList<>(currentAssignments);
+                maxPointsUsedWithMaxDiscount = currentTotalPointsUsed;
+                System.out.println("  New best solution: Discount " + maxTotalDiscountFound + ", Points " + maxPointsUsedWithMaxDiscount);
+            } else if (currentTotalDiscount.compareTo(maxTotalDiscountFound) == 0) {
+                // If discounts are equal, prefer the one using more points
+                if (currentTotalPointsUsed.compareTo(maxPointsUsedWithMaxDiscount) > 0) {
+                    maxTotalDiscountFound = currentTotalDiscount; // Redundant but clear
+                    bestPaymentAssignments = new ArrayList<>(currentAssignments);
+                    maxPointsUsedWithMaxDiscount = currentTotalPointsUsed;
+                    System.out.println("  New best solution (same discount, more points): Discount " + maxTotalDiscountFound + ", Points " + maxPointsUsedWithMaxDiscount);
+                }
+            }
+            return;
+        }
+
+        // Pruning: If current best discount + max possible remaining discount < maxTotalDiscountFound, prune.
+
+        Order currentOrder = orders.get(orderIndex);
+        boolean orderPaidInThisPath = false;
+
+        // --- Try all payment options for currentOrder ---
+
+        // Option 1: Full Traditional Payment with Promo
+        if (currentOrder.getPromotions() != null) {
+            for (String promoId : currentOrder.getPromotions()) {
+                if (POINTS_PAYMENT_METHOD_ID.equals(promoId) || !currentMethodsState.containsKey(promoId)) continue;
+
+                PaymentMethod traditionalMethod = currentMethodsState.get(promoId);
+                BigDecimal discount = paymentProcessor.calculateFullTraditionalPaymentDiscount(currentOrder, promoId);
+                BigDecimal effectiveValue = currentOrder.getValue().subtract(discount);
+
+                if (discount.compareTo(BigDecimal.ZERO) >= 0 && // Allow zero discount if it's the only way
+                        traditionalMethod.getRemainingLimit().compareTo(effectiveValue) >= 0) {
+
+                    traditionalMethod.useAmount(effectiveValue);
+                    currentAssignments.add(new PaymentAssignment(currentOrder.getId(), promoId, BigDecimal.ZERO, effectiveValue, discount));
+
+                    backtrack(orderIndex + 1, currentMethodsState, currentAssignments,
+                            currentTotalDiscount.add(discount), currentTotalPointsUsed);
+
+                    currentAssignments.remove(currentAssignments.size() - 1);
+                    traditionalMethod.addAmount(effectiveValue); // Backtrack
+                    orderPaidInThisPath = true;
+                }
+            }
+        }
+
+        // Option 2: Full Points Payment
+        PaymentMethod pointsMethod = currentMethodsState.get(POINTS_PAYMENT_METHOD_ID);
+        if (pointsMethod != null) {
+            BigDecimal discount = paymentProcessor.calculatePointsDiscount(currentOrder, currentOrder.getValue());
+            BigDecimal effectiveValue = currentOrder.getValue().subtract(discount); // Effective value is what we pay, but points used is full order value
+
+            if (discount.compareTo(BigDecimal.ZERO) >= 0 &&
+                    pointsMethod.getRemainingLimit().compareTo(currentOrder.getValue()) >= 0) { // Use full order value from points
+
+                pointsMethod.useAmount(currentOrder.getValue());
+                currentAssignments.add(new PaymentAssignment(currentOrder.getId(), null, currentOrder.getValue(), BigDecimal.ZERO, discount));
+
+                backtrack(orderIndex + 1, currentMethodsState, currentAssignments,
+                        currentTotalDiscount.add(discount), currentTotalPointsUsed.add(currentOrder.getValue()));
+
+                currentAssignments.remove(currentAssignments.size() - 1);
+                pointsMethod.addAmount(currentOrder.getValue()); // Backtrack
+                orderPaidInThisPath = true;
+            }
+        }
+
+        // Option 3: Partial Points Payment (>= 10%) + Traditional
+        if (pointsMethod != null) {
+            BigDecimal minPartialPointsToUse = currentOrder.getValue().multiply(MIN_PARTIAL_POINTS_PERCENTAGE).setScale(SCALE, ROUNDING_MODE);
+            // Try using exactly minPartialPointsToUse, or more if it doesn't change the 10% discount rule
+            // For simplicity, let's stick to minPartialPointsToUse to trigger the 10% discount.
+
+            if (pointsMethod.getRemainingLimit().compareTo(minPartialPointsToUse) >= 0) {
+                BigDecimal discount = paymentProcessor.calculatePointsDiscount(currentOrder, minPartialPointsToUse);
+
+                if (discount.compareTo(BigDecimal.ZERO) > 0) { // Ensure partial points actually give a discount
+                    BigDecimal effectiveOrderValueAfterPointsDiscount = currentOrder.getValue().subtract(discount);
+                    BigDecimal remainingToPayWithTraditional = effectiveOrderValueAfterPointsDiscount.subtract(minPartialPointsToUse);
+
+                    for (Map.Entry<String, PaymentMethod> entry : currentMethodsState.entrySet()) {
+                        String traditionalMethodId = entry.getKey();
+                        PaymentMethod traditionalMethod = entry.getValue();
+
+                        if (POINTS_PAYMENT_METHOD_ID.equals(traditionalMethodId)) continue;
+
+                        if (traditionalMethod.getRemainingLimit().compareTo(remainingToPayWithTraditional) >= 0) {
+                            pointsMethod.useAmount(minPartialPointsToUse);
+                            traditionalMethod.useAmount(remainingToPayWithTraditional);
+                            currentAssignments.add(new PaymentAssignment(currentOrder.getId(), traditionalMethodId, minPartialPointsToUse, remainingToPayWithTraditional, discount));
+
+                            backtrack(orderIndex + 1, currentMethodsState, currentAssignments,
+                                    currentTotalDiscount.add(discount), currentTotalPointsUsed.add(minPartialPointsToUse));
+
+                            currentAssignments.remove(currentAssignments.size() - 1);
+                            traditionalMethod.addAmount(remainingToPayWithTraditional);
+                            pointsMethod.addAmount(minPartialPointsToUse); // Backtrack
+                            orderPaidInThisPath = true;
                         }
                     }
                 }
             }
-
-            // If a beneficial bank discount is found, check feasibility and apply
-            if (bestMethodId != null && bestDiscount.compareTo(BigDecimal.ZERO) > 0) {
-                BigDecimal effectiveValue = order.getValue().subtract(bestDiscount);
-                PaymentMethod paymentMethod = paymentMethodsMap.get(bestMethodId);
-
-                // Check if the method has enough remaining limit
-                if (paymentMethod != null && paymentMethod.getRemainingLimit().compareTo(effectiveValue) >= 0) {
-                    // Feasible: Apply the payment
-                    System.out.println("  Paying Order " + order.getId() + " (" + order.getValue() + ") fully with " + bestMethodId +
-                            " for a discount of " + bestDiscount + ". Effective value: " + effectiveValue);
-                    paymentProcessor.processPayment(order, bestMethodId, effectiveValue);
-                    fullyPaidInStep1.add(order);
-                    paidOrders.add(order); // Mark as paid
-                } else {
-                    // Not feasible due to limit
-                    System.out.println("  Could not pay Order " + order.getId() + " fully with " + bestMethodId + ": Insufficient limit.");
-                }
-            }
         }
-        // Remove orders paid in this step from unpaidOrders list
-        unpaidOrders.removeAll(fullyPaidInStep1);
-        System.out.println("  Completed Step 1. Remaining unpaid orders: " + unpaidOrders.size());
 
+        // Option 4: Full Traditional Payment (No Promo / No Discount from this method)
+        // This is a fallback if other options with discounts are not better or not feasible.
+        // We should only try this if no discount strategy was better.
+        // The logic for "best" is handled by the maxTotalDiscountFound comparison.
+        for (Map.Entry<String, PaymentMethod> entry : currentMethodsState.entrySet()) {
+            String traditionalMethodId = entry.getKey();
+            PaymentMethod traditionalMethod = entry.getValue();
 
-        // Step 2: Handle Remaining Unpaid Orders with Points Discounts
-        System.out.println("\n--- Step 2: Handling Remaining Orders with Points ---");
-        List<Order> fullyPaidInStep2 = new ArrayList<>();
+            if (POINTS_PAYMENT_METHOD_ID.equals(traditionalMethodId)) continue;
 
-        // Process the remaining unpaid orders
-        for (Order order : unpaidOrders) {
-            BigDecimal originalOrderValue = order.getValue();
-            BigDecimal potentialPointsDiscountAmount = BigDecimal.ZERO;
-            BigDecimal amountToPayWithPoints = BigDecimal.ZERO; // Amount of points we'd *attempt* to use
-
-            PaymentMethod pointsMethod = paymentMethodsMap.get(POINTS_PAYMENT_METHOD_ID);
-
-            // Check if points method is available at all
-            if (pointsMethod == null) {
-                System.out.println("  Order " + order.getId() + ": POINTS payment method not available. Skipping points strategies.");
-                continue; // Move to the next order or Step 3
-            }
-
-            // Option 2a: Try Full Points Payment
-            // Check if points limit allows paying the full order value
-            if (pointsMethod.getRemainingLimit().compareTo(originalOrderValue) >= 0) {
-                // Feasible to pay fully with points from a limit perspective
-                BigDecimal calculatedDiscount = paymentProcessor.calculatePointsDiscount(order, originalOrderValue);
-                if (calculatedDiscount.compareTo(BigDecimal.ZERO) > 0) {
-                    // Full points payment offers a discount
-                    System.out.println("  Considering Order " + order.getId() + ": Full points payment feasible with discount " + calculatedDiscount);
-                    potentialPointsDiscountAmount = calculatedDiscount;
-                    amountToPayWithPoints = originalOrderValue;
-
-                    // Apply the full points payment
-                    BigDecimal effectiveValue = originalOrderValue.subtract(potentialPointsDiscountAmount);
-                    System.out.println("  Paying Order " + order.getId() + " (" + originalOrderValue + ") fully with POINTS. Effective value: " + effectiveValue);
-                    paymentProcessor.processPayment(order, POINTS_PAYMENT_METHOD_ID, amountToPayWithPoints);
-                    fullyPaidInStep2.add(order);
+            // Check if this method is NOT in the order's promotions, or if it is, the discount is zero
+            boolean noPromoDiscount = true;
+            if (currentOrder.getPromotions() != null && currentOrder.getPromotions().contains(traditionalMethodId)) {
+                if (paymentProcessor.calculateFullTraditionalPaymentDiscount(currentOrder, traditionalMethodId).compareTo(BigDecimal.ZERO) > 0) {
+                    noPromoDiscount = false; // This path is covered by Option 1
                 }
             }
 
-            // If not paid fully with points in this step, consider partial points
-            if (!fullyPaidInStep2.contains(order)) {
-                BigDecimal minPartialPointsAmount = originalOrderValue.multiply(MIN_PARTIAL_POINTS_PERCENTAGE).setScale(2, RoundingMode.HALF_UP);
+            if (noPromoDiscount && traditionalMethod.getRemainingLimit().compareTo(currentOrder.getValue()) >= 0) {
+                BigDecimal discount = BigDecimal.ZERO; // No discount for this specific path
 
-                // Option 2b: Try Partial Points Payment (at least 10%)
-                // Check if we can pay at least 10% of the original value with remaining points
-                if (pointsMethod.getRemainingLimit().compareTo(minPartialPointsAmount) >= 0) {
+                traditionalMethod.useAmount(currentOrder.getValue());
+                currentAssignments.add(new PaymentAssignment(currentOrder.getId(), traditionalMethodId, BigDecimal.ZERO, currentOrder.getValue(), discount));
 
-                    // Determine how much points to use for the partial payment.
-                    // Greedy choice: use just enough (10%) to trigger the discount.
-                    BigDecimal amountFor10PercentDiscount = minPartialPointsAmount;
+                backtrack(orderIndex + 1, currentMethodsState, currentAssignments,
+                        currentTotalDiscount.add(discount), currentTotalPointsUsed);
 
-                    // Double-check if remaining points limit is sufficient for THIS specific amount
-                    if (pointsMethod.getRemainingLimit().compareTo(amountFor10PercentDiscount) >= 0) {
-                        // Potential for 10% points discount exists
-                        BigDecimal calculatedDiscount = paymentProcessor.calculatePointsDiscount(order, amountFor10PercentDiscount);
-
-                        if (calculatedDiscount.compareTo(BigDecimal.ZERO) > 0) {
-                            System.out.println("  Considering Order " + order.getId() + ": Partial points payment >= 10% feasible with discount " + calculatedDiscount);
-                            potentialPointsDiscountAmount = calculatedDiscount;
-                            amountToPayWithPoints = amountFor10PercentDiscount;
-                            BigDecimal effectiveValue = originalOrderValue.subtract(potentialPointsDiscountAmount);
-                            BigDecimal remainingAmountToPay = effectiveValue.subtract(amountToPayWithPoints); // Amount to pay with traditional method
-
-                            // Find a suitable traditional payment method for the remaining amount
-                            // Simple heuristic: Find the first one with enough limit.
-                            Optional<PaymentMethod> traditionalMethodForPartial = paymentMethodsMap.values().stream()
-                                    .filter(pm -> !POINTS_PAYMENT_METHOD_ID.equals(pm.getId()) && pm.getRemainingLimit().compareTo(remainingAmountToPay) >= 0)
-                                    .findFirst();
-
-                            if (traditionalMethodForPartial.isPresent()) {
-                                String traditionalMethodId = traditionalMethodForPartial.get().getId();
-                                System.out.println("  Paying Order " + order.getId() + " (" + originalOrderValue + ") with POINTS (" + amountToPayWithPoints + ") and " + traditionalMethodId + " (" + remainingAmountToPay + "). Effective value: " + effectiveValue);
-
-                                // Apply the payments
-                                paymentProcessor.processPayment(order, POINTS_PAYMENT_METHOD_ID, amountToPayWithPoints);
-                                paymentProcessor.processPayment(order, traditionalMethodId, remainingAmountToPay);
-
-                                fullyPaidInStep2.add(order);
-
-                            } else {
-                                System.out.println("  Order " + order.getId() + ": Could not find a traditional method for remaining " + remainingAmountToPay + " after partial points payment. Cannot apply partial points strategy.");
-                                // If we can't pay the remaining, this strategy is not feasible right now.
-                                // The order remains in unpaidOrders for Step 3.
-                            }
-                        }
-                    }
-                }
-            }
-
-            // If the order was fully paid in this step, add it to paidOrders
-            fullyPaidInStep2.forEach(paidOrders::add);
-        }
-        // Remove orders paid in this step from unpaidOrders list
-        unpaidOrders.removeAll(fullyPaidInStep2);
-        System.out.println("  Completed Step 2. Remaining unpaid orders: " + unpaidOrders.size());
-
-
-        // Step 3: Pay Remaining Unpaid Orders with Available Traditional Methods (No Discount)
-        System.out.println("\n--- Step 3: Paying Remaining Orders with Available Traditional Methods ---");
-        List<Order> fullyPaidInStep3 = new ArrayList<>();
-
-        // Process the remaining unpaid orders
-        for (Order order : unpaidOrders) {
-            BigDecimal amountToPay = order.getValue();
-            boolean paidInThisStep = false;
-
-            // Find a suitable traditional payment method for the full amount
-            // Simple heuristic: Find the first one with enough limit.
-            Optional<PaymentMethod> traditionalMethodForFull = paymentMethodsMap.values().stream()
-                    .filter(pm -> !POINTS_PAYMENT_METHOD_ID.equals(pm.getId()) && pm.getRemainingLimit().compareTo(amountToPay) >= 0)
-                    .findFirst();
-
-            if (traditionalMethodForFull.isPresent()) {
-                String traditionalMethodId = traditionalMethodForFull.get().getId();
-                System.out.println("  Paying remaining Order " + order.getId() + " (" + amountToPay + ") fully with " + traditionalMethodId + " (No specific discount).");
-                paymentProcessor.processPayment(order, traditionalMethodId, amountToPay);
-                fullyPaidInStep3.add(order);
-                paidInThisStep = true;
-            } else {
-                System.err.println("  Could NOT pay remaining Order " + order.getId() + " (" + amountToPay + "). No available traditional method with sufficient limit.");
-                // This case indicates failure to pay all orders.
-            }
-
-            if (paidInThisStep) {
-                paidOrders.add(order); // Mark as paid
+                currentAssignments.remove(currentAssignments.size() - 1);
+                traditionalMethod.addAmount(currentOrder.getValue()); // Backtrack
+                orderPaidInThisPath = true;
             }
         }
-        // Remove orders paid in this step from unpaidOrders list
-        unpaidOrders.removeAll(fullyPaidInStep3);
-        System.out.println("  Completed Step 3. Remaining unpaid orders: " + unpaidOrders.size());
-
-        System.out.println("\n--- Payment Optimization Finished ---");
-
-        // Return the list of orders that remain unpaid
-        return unpaidOrders;
-    }
-
-    private BigDecimal calculateMaxBankDiscountForOrder(Order order) {
-        BigDecimal maxDiscount = BigDecimal.ZERO;
-        if (order.getPromotions() != null) {
-            for (String promoId : order.getPromotions()) {
-                if (!POINTS_PAYMENT_METHOD_ID.equals(promoId) && paymentMethodsMap.containsKey(promoId)) {
-                    maxDiscount = maxDiscount.max(paymentProcessor.calculateFullTraditionalPaymentDiscount(order, promoId));
-                }
-            }
-        }
-        return maxDiscount;
+        // If !orderPaidInThisPath after trying all options, it means this order couldn't be paid with current state,
+        // so this branch of recursion is invalid. The base case (all orders processed) won't be hit.
     }
 }

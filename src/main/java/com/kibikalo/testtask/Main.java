@@ -58,40 +58,24 @@ public class Main {
 
             PaymentProcessor paymentProcessor = new PaymentProcessor(paymentMethodsMap);
 
-            // Initialize the PaymentOptimizerService (contains the optimization algorithm)
-            PaymentOptimizerService optimizerService = new PaymentOptimizerService(paymentProcessor, paymentMethodsMap);
+            // --- Use Backtracking Optimizer ---
+            PaymentOptimizerService optimizer = new PaymentOptimizerService(orders, paymentMethodsMap, paymentProcessor);
+            Map<String, BigDecimal> finalPaymentTotals = optimizer.solve();
 
-            // Run the optimization algorithm
-            List<Order> unpaidOrders = optimizerService.optimizePayments(orders);
-
-
-            // Final check: ensure all orders are paid
-            if (!unpaidOrders.isEmpty()) {
-                System.err.println("\nWARNING: Not all orders were paid!");
-                System.err.println("Unpaid orders:");
-                unpaidOrders.forEach(order -> System.err.println("  " + order.getId() + " (Value: " + order.getValue() + ")"));
-            } else {
-                System.out.println("\nAll orders were successfully paid.");
-            }
-
-
-            // After the optimization logic is done, get the final totals from the PaymentProcessor:
-            Map<String, BigDecimal> finalPaymentTotals = paymentProcessor.getTotalAmountPaidByMethod();
 
             // Format and print finalPaymentTotals
-            System.out.println("\n--- Final Payment Totals by Method ---");
+            System.out.println("\n--- Final Payment Totals by Method (Backtracking) ---");
             if (finalPaymentTotals.isEmpty() || finalPaymentTotals.values().stream().allMatch(amount -> amount.compareTo(BigDecimal.ZERO) == 0)) {
-                System.out.println("No payments were processed.");
+                System.out.println("No payments were processed or no solution found.");
             } else {
-                // Print in the required format: <id_metody> <wydana_kwota>
                 finalPaymentTotals.forEach((methodId, amount) -> {
-                    // Only print methods that were actually used
                     if (amount.compareTo(BigDecimal.ZERO) > 0) {
                         System.out.println(methodId + " " + amount.setScale(SCALE, ROUNDING_MODE));
                     }
                 });
             }
             System.out.println("------------------------------------");
+
 
         } catch (IOException e) {
             System.err.println("Error loading data: " + e.getMessage());
