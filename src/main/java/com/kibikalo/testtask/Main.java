@@ -3,9 +3,12 @@ package com.kibikalo.testtask;
 import com.kibikalo.testtask.io.DataLoader;
 import com.kibikalo.testtask.model.Order;
 import com.kibikalo.testtask.model.PaymentMethod;
+import com.kibikalo.testtask.validation.DataValidator;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 public class Main {
     public static void main(String[] args) {
@@ -18,20 +21,32 @@ public class Main {
         String paymentMethodsFilePath = args[1];
 
         DataLoader dataLoader = new DataLoader();
+        DataValidator dataValidator = new DataValidator();
 
         try {
             List<Order> orders = dataLoader.loadOrders(ordersFilePath);
-            List<PaymentMethod> paymentMethods = dataLoader.loadPaymentMethods(paymentMethodsFilePath);
+            List<PaymentMethod> paymentMethodsList = dataLoader.loadPaymentMethods(paymentMethodsFilePath);
+
+            dataValidator.validateData(orders, paymentMethodsList);
 
             System.out.println("Successfully loaded orders:");
             orders.forEach(System.out::println);
 
             System.out.println("\nSuccessfully loaded payment methods:");
-            paymentMethods.forEach(System.out::println);
+            paymentMethodsList.forEach(System.out::println);
+
+            Map<String, PaymentMethod> paymentMethodsMap = paymentMethodsList.stream()
+                    .collect(Collectors.toMap(PaymentMethod::getId, paymentMethod -> paymentMethod));
+
+            System.out.println("\nPayment methods available for use (with initial limits):");
+            paymentMethodsMap.values().forEach(System.out::println);
 
         } catch (IOException e) {
             System.err.println("Error loading data: " + e.getMessage());
             e.printStackTrace();
+            System.exit(1);
+        } catch (IllegalArgumentException e) {
+            System.err.println("Data validation error: " + e.getMessage());
             System.exit(1);
         }
     }
