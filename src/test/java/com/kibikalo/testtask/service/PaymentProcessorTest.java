@@ -20,7 +20,9 @@ class PaymentProcessorTest {
     private Map<String, PaymentMethod> paymentMethodsMap;
     private PaymentProcessor paymentProcessor;
 
-    private static final BigDecimal EXPECTED_ZERO_DISCOUNT = BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+    private static final int SCALE = 2;
+    private static final RoundingMode ROUNDING_MODE = RoundingMode.HALF_UP;
+    private static final BigDecimal EXPECTED_ZERO_DISCOUNT = BigDecimal.ZERO.setScale(SCALE, ROUNDING_MODE);
 
     @BeforeEach
     void setUp() {
@@ -49,6 +51,8 @@ class PaymentProcessorTest {
         paymentProcessor = new PaymentProcessor(new HashMap<>(paymentMethodsMap));
     }
 
+
+    // ------ TEST Calculate Full Traditional Payment Discount ------
     @Test
     @DisplayName("Calculate full traditional payment discount when promotion is applicable")
     void testCalculateFullTraditionalPaymentDiscount_Applicable() {
@@ -110,6 +114,8 @@ class PaymentProcessorTest {
     }
 
 
+
+    // ------ TEST Calculate Points Discount ------
     @Test
     @DisplayName("Calculate points discount for full points payment")
     void testCalculatePointsDiscount_FullPointsPayment() {
@@ -218,5 +224,183 @@ class PaymentProcessorTest {
         assertEquals(0, expectedDiscount.compareTo(actualDiscount), "Discount should be 0 if PUNKTY method is missing for full points payment");
     }
 
-    // Add tests for calculateEffectiveOrderValue later when implemented
+
+
+    // ------ TEST Calculate Effective Order Value ------
+    @Test
+    @DisplayName("Calculate effective value with full traditional payment (promo applicable)")
+    void testCalculateEffectiveOrderValue_FullTraditional_Applicable() {
+        Order order = new Order();
+        order.setId("ORDER_EFF_1");
+        order.setValue(new BigDecimal("100.00"));
+        order.setPromotions(Arrays.asList("mZysk")); // mZysk promo applicable
+
+        String traditionalMethodId = "mZysk";
+        BigDecimal amountPaidWithPoints = BigDecimal.ZERO;
+
+        // Expected discount: 10% of 100.00 = 10.00
+        // Expected effective value: 100.00 - 10.00 = 90.00
+        BigDecimal expectedEffectiveValue = new BigDecimal("90.00");
+        BigDecimal actualEffectiveValue = paymentProcessor.calculateEffectiveOrderValue(order, traditionalMethodId, amountPaidWithPoints);
+
+        assertEquals(0, expectedEffectiveValue.compareTo(actualEffectiveValue), "Effective value should reflect full traditional discount");
+    }
+
+    @Test
+    @DisplayName("Calculate effective value with full traditional payment (promo NOT applicable)")
+    void testCalculateEffectiveOrderValue_FullTraditional_NotApplicable() {
+        Order order = new Order();
+        order.setId("ORDER_EFF_2");
+        order.setValue(new BigDecimal("150.00"));
+        order.setPromotions(Arrays.asList("BosBankrut")); // mZysk promo NOT applicable
+
+        String traditionalMethodId = "mZysk";
+        BigDecimal amountPaidWithPoints = BigDecimal.ZERO;
+
+        // Expected discount: 0
+        // Expected effective value: 150.00 - 0 = 150.00
+        BigDecimal expectedEffectiveValue = new BigDecimal("150.00");
+        BigDecimal actualEffectiveValue = paymentProcessor.calculateEffectiveOrderValue(order, traditionalMethodId, amountPaidWithPoints);
+
+        assertEquals(0, expectedEffectiveValue.compareTo(actualEffectiveValue), "Effective value should be original value when traditional promo not applicable");
+    }
+
+    @Test
+    @DisplayName("Calculate effective value with full points payment")
+    void testCalculateEffectiveOrderValue_FullPoints() {
+        Order order = new Order();
+        order.setId("ORDER_EFF_3");
+        order.setValue(new BigDecimal("200.00"));
+        order.setPromotions(Arrays.asList("mZysk")); // This promo is ignored due to full points payment
+
+        String traditionalMethodId = null; // Not using a traditional method
+        BigDecimal amountPaidWithPoints = new BigDecimal("200.00"); // Full amount
+
+        // Expected discount (PUNKTY discount is 15%): 15% of 200.00 = 30.00
+        // Expected effective value: 200.00 - 30.00 = 170.00
+        BigDecimal expectedEffectiveValue = new BigDecimal("170.00");
+        BigDecimal actualEffectiveValue = paymentProcessor.calculateEffectiveOrderValue(order, traditionalMethodId, amountPaidWithPoints);
+
+        assertEquals(0, expectedEffectiveValue.compareTo(actualEffectiveValue), "Effective value should reflect full points discount");
+    }
+
+    @Test
+    @DisplayName("Calculate effective value with partial points payment (>= 10%) + traditional method")
+    void testCalculateEffectiveOrderValue_PartialPoints_Above10Percent_WithTraditional() {
+        Order order = new Order();
+        order.setId("ORDER_EFF_4");
+        order.setValue(new BigDecimal("100.00"));
+        order.setPromotions(Arrays.asList("mZysk")); // This promo is ignored due to partial points payment
+
+        String traditionalMethodId = "BosBankrut"; // Used for the remaining amount
+        BigDecimal amountPaidWithPoints = new BigDecimal("20.00"); // 20% of 100.00
+
+        // Expected discount (partial points 10%): 10% of 100.00 = 10.00
+        // Expected effective value: 100.00 - 10.00 = 90.00
+        BigDecimal expectedEffectiveValue = new BigDecimal("90.00");
+        BigDecimal actualEffectiveValue = paymentProcessor.calculateEffectiveOrderValue(order, traditionalMethodId, amountPaidWithPoints);
+
+        assertEquals(0, expectedEffectiveValue.compareTo(actualEffectiveValue), "Effective value should reflect partial points discount");
+    }
+
+    @Test
+    @DisplayName("Calculate effective value with partial points payment (>= 10%) + NO traditional method specified")
+    void testCalculateEffectiveOrderValue_PartialPoints_Above10Percent_NoTraditional() {
+        Order order = new Order();
+        order.setId("ORDER_EFF_5");
+        order.setValue(new BigDecimal("100.00"));
+        order.setPromotions(Arrays.asList("mZysk")); // This promo is ignored due to partial points payment
+
+        String traditionalMethodId = null; // No traditional method specified
+        BigDecimal amountPaidWithPoints = new BigDecimal("20.00"); // 20% of 100.00
+
+        // Expected discount (partial points 10%): 10% of 100.00 = 10.00
+        // Expected effective value: 100.00 - 10.00 = 90.00
+        BigDecimal expectedEffectiveValue = new BigDecimal("90.00");
+        BigDecimal actualEffectiveValue = paymentProcessor.calculateEffectiveOrderValue(order, traditionalMethodId, amountPaidWithPoints);
+
+        assertEquals(0, expectedEffectiveValue.compareTo(actualEffectiveValue), "Effective value should reflect partial points discount even with no explicit traditional method");
+    }
+
+
+    @Test
+    @DisplayName("Calculate effective value with points payment (< 10%) + traditional method")
+    void testCalculateEffectiveOrderValue_PartialPoints_Below10Percent_WithTraditional() {
+        Order order = new Order();
+        order.setId("ORDER_EFF_6");
+        order.setValue(new BigDecimal("100.00"));
+        order.setPromotions(Arrays.asList("BosBankrut")); // BosBankrut promo applicable for full payment
+
+        String traditionalMethodId = "mZysk"; // Used for the remaining amount
+        BigDecimal amountPaidWithPoints = new BigDecimal("5.00"); // 5% of 100.00
+
+        // Expected discount: 0 (points payment < 10%, and traditional method used is NOT for full payment)
+        // Expected effective value: 100.00 - 0 = 100.00
+        BigDecimal expectedEffectiveValue = new BigDecimal("100.00");
+        BigDecimal actualEffectiveValue = paymentProcessor.calculateEffectiveOrderValue(order, traditionalMethodId, amountPaidWithPoints);
+
+        assertEquals(0, expectedEffectiveValue.compareTo(actualEffectiveValue), "Effective value should be original value when points < 10% and not full traditional payment");
+    }
+
+    @Test
+    @DisplayName("Calculate effective value with points payment (< 10%) + full payment with the specified traditional method")
+    void testCalculateEffectiveOrderValue_PartialPoints_Below10Percent_FullTraditionalAttempt() {
+        Order order = new Order();
+        order.setId("ORDER_EFF_7");
+        order.setValue(new BigDecimal("100.00"));
+        order.setPromotions(Arrays.asList("mZysk")); // mZysk promo applicable for full payment
+
+        // THIS IS A SCENARIO THAT SHOULDN'T HAPPEN IN AN OPTIMAL STRATEGY
+        // but we need to test how the method handles it based on the rules.
+        // If points are used AT ALL, bank card discount is excluded.
+        // So, paying even a tiny bit of points should remove the mZysk discount possibility.
+
+        String traditionalMethodId = "mZysk"; // Specified as the traditional method
+        BigDecimal amountPaidWithPoints = new BigDecimal("1.00"); // 1% of 100.00
+
+        // Expected discount: 0 (points were used, so bank card promo is excluded, and points used < 10%)
+        // Expected effective value: 100.00 - 0 = 100.00
+        BigDecimal expectedEffectiveValue = new BigDecimal("100.00");
+        BigDecimal actualEffectiveValue = paymentProcessor.calculateEffectiveOrderValue(order, traditionalMethodId, amountPaidWithPoints);
+
+        assertEquals(0, expectedEffectiveValue.compareTo(actualEffectiveValue), "Effective value should be original value when points > 0 and bank card promo is excluded");
+    }
+
+    @Test
+    @DisplayName("Calculate effective value with no points and no traditional method specified")
+    void testCalculateEffectiveOrderValue_NoPoints_NoTraditional() {
+        Order order = new Order();
+        order.setId("ORDER_EFF_8");
+        order.setValue(new BigDecimal("100.00"));
+        order.setPromotions(Arrays.asList("mZysk")); // mZysk promo exists, but not used for full payment
+
+        String traditionalMethodId = null;
+        BigDecimal amountPaidWithPoints = BigDecimal.ZERO;
+
+        // Expected discount: 0
+        // Expected effective value: 100.00 - 0 = 100.00
+        BigDecimal expectedEffectiveValue = new BigDecimal("100.00");
+        BigDecimal actualEffectiveValue = paymentProcessor.calculateEffectiveOrderValue(order, traditionalMethodId, amountPaidWithPoints);
+
+        assertEquals(0, expectedEffectiveValue.compareTo(actualEffectiveValue), "Effective value should be original value when no points and no full traditional method");
+    }
+
+    @Test
+    @DisplayName("Calculate effective value with no points and an invalid traditional method specified")
+    void testCalculateEffectiveOrderValue_NoPoints_InvalidTraditional() {
+        Order order = new Order();
+        order.setId("ORDER_EFF_9");
+        order.setValue(new BigDecimal("100.00"));
+        order.setPromotions(Arrays.asList("mZysk"));
+
+        String traditionalMethodId = "FakeBank"; // Invalid method ID
+        BigDecimal amountPaidWithPoints = BigDecimal.ZERO;
+
+        // Expected discount: 0 (invalid method)
+        // Expected effective value: 100.00 - 0 = 100.00
+        BigDecimal expectedEffectiveValue = new BigDecimal("100.00");
+        BigDecimal actualEffectiveValue = paymentProcessor.calculateEffectiveOrderValue(order, traditionalMethodId, amountPaidWithPoints);
+
+        assertEquals(0, expectedEffectiveValue.compareTo(actualEffectiveValue), "Effective value should be original value when full traditional method is invalid");
+    }
 }

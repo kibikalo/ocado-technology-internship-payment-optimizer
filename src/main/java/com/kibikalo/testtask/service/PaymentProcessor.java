@@ -16,7 +16,9 @@ public class PaymentProcessor {
 
     // Constants for discount logic
     private static final String POINTS_PAYMENT_METHOD_ID = "PUNKTY";
-    private static final BigDecimal MIN_PARTIAL_POINTS_PERCENTAGE = new BigDecimal("0.10"); // 10%
+    private static final BigDecimal MIN_PARTIAL_POINTS_PERCENTAGE = new BigDecimal("0.10");
+    private static final int SCALE = 2; // Standard scale for currency
+    private static final RoundingMode ROUNDING_MODE = RoundingMode.HALF_UP; // Standard rounding mode
 
     public PaymentProcessor(Map<String, PaymentMethod> paymentMethods) {
         this.paymentMethods = paymentMethods;
@@ -125,6 +127,72 @@ public class PaymentProcessor {
         }
 
         return BigDecimal.ZERO;
+    }
+
+    /**
+     * Calculates the effective amount to be paid for an order under a given payment strategy.
+     * @param traditionalPaymentMethodId The ID of the traditional method used for payment (can be null).
+     * @param amountPaidWithPoints The amount of the order value paid using points (can be BigDecimal.ZERO).
+     * @return The effective amount to be paid after applying the highest applicable discount.
+     *         Returns the original order value if no discount applies.
+     *         Returns BigDecimal.ZERO if amountPaidWithPoints > order.getValue() or invalid method ID is provided.
+     */
+    public BigDecimal calculateEffectiveOrderValue(Order order, String traditionalPaymentMethodId, BigDecimal amountPaidWithPoints) {
+        if (amountPaidWithPoints == null || amountPaidWithPoints.compareTo(BigDecimal.ZERO) < 0) {
+            throw new IllegalArgumentException("Amount paid with points must be non-negative.");
+        }
+
+        if (amountPaidWithPoints.compareTo(order.getValue()) > 0) {
+            System.err.println("Warning: Amount paid with points exceeds order value in effective value calculation for Order ID: " + order.getId());
+            return BigDecimal.ZERO.setScale(SCALE, ROUNDING_MODE);
+        }
+
+        BigDecimal orderValue = order.getValue();
+        BigDecimal appliedDiscount = BigDecimal.ZERO.setScale(SCALE, ROUNDING_MODE);
+
+        // Scenario 1: Full traditional payment
+        if (amountPaidWithPoints.compareTo(BigDecimal.ZERO) == 0 && traditionalPaymentMethodId != null && !traditionalPaymentMethodId.trim().isEmpty()) {
+            // Ensure the traditional method exists
+            if (paymentMethods.containsKey(traditionalPaymentMethodId) && !POINTS_PAYMENT_METHOD_ID.equals(traditionalPaymentMethodId)) {
+                // This check is important because full traditional payment discount EXCLUDES partial points discount.
+                // We only consider the traditional discount here.
+                BigDecimal traditionalDiscount = calculateFullTraditionalPaymentDiscount(order, traditionalPaymentMethodId);
+                appliedDiscount = traditionalDiscount;
+            } else {
+                System.err.println("Warning: Invalid traditional payment method ID in effective value calculation: " + traditionalPaymentMethodId);
+                return orderValue;
+            }
+
+        } else if (amountPaidWithPoints.compareTo(BigDecimal.ZERO) > 0) {
+            // Scenarios 2 & 3: Full or partial points payment
+            BigDecimal pointsDiscount = calculatePointsDiscount(order, amountPaidWithPoints);
+            appliedDiscount = pointsDiscount;
+
+            // IMPORTANT: Even if amountPaidWithPoints is > 0, we need to check if a traditional
+            // method is also specified for partial payment. If so, we ensure it's a valid method
+            // for later processing, though it doesn't affect the *discount* calculation here.
+            if (traditionalPaymentMethodId != null && !traditionalPaymentMethodId.trim().isEmpty() && !paymentMethods.containsKey(traditionalPaymentMethodId)) {
+                System.err.println("Warning: Invalid traditional payment method ID provided for partial points payment in effective value calculation: " + traditionalPaymentMethodId);
+                // You might want to return the original value or handle this as an error
+                return orderValue; // Treat as no discount if the partial traditional method is invalid
+            }
+
+
+        } else {
+            // Scenario 4: No points, and no traditional method specified for full payment (or invalid method)
+            System.out.println("Info: No points used and no valid full traditional payment method specified for Order ID: " + order.getId() + ". No discount applied.");
+            return orderValue;
+        }
+
+        // The effective amount to pay is the original value minus the applied discount
+        BigDecimal effectiveValue = orderValue.subtract(appliedDiscount).setScale(SCALE, ROUNDING_MODE);
+
+        // Ensure effective value is not negative due to rounding issues (shouldn't happen with correct logic)
+        if (effectiveValue.compareTo(BigDecimal.ZERO) < 0) {
+            effectiveValue = BigDecimal.ZERO.setScale(SCALE, ROUNDING_MODE);
+        }
+
+        return effectiveValue;
     }
 
     public Map<String, BigDecimal> getTotalAmountPaidByMethod() {
