@@ -1,0 +1,38 @@
+package com.kibikalo.testtask;
+
+import com.kibikalo.testtask.io.DataLoader;
+import com.kibikalo.testtask.model.Order;
+import com.kibikalo.testtask.model.PaymentMethod;
+
+import java.io.IOException;
+import java.util.List;
+
+public class Main {
+    public static void main(String[] args) {
+        if (args.length != 2) {
+            System.err.println("Usage: java -jar payment-optimizer.jar <orders_json_path> <payment_methods_json_path>");
+            System.exit(1);
+        }
+
+        String ordersFilePath = args[0];
+        String paymentMethodsFilePath = args[1];
+
+        DataLoader dataLoader = new DataLoader();
+
+        try {
+            List<Order> orders = dataLoader.loadOrders(ordersFilePath);
+            List<PaymentMethod> paymentMethods = dataLoader.loadPaymentMethods(paymentMethodsFilePath);
+
+            System.out.println("Successfully loaded orders:");
+            orders.forEach(System.out::println);
+
+            System.out.println("\nSuccessfully loaded payment methods:");
+            paymentMethods.forEach(System.out::println);
+
+        } catch (IOException e) {
+            System.err.println("Error loading data: " + e.getMessage());
+            e.printStackTrace();
+            System.exit(1);
+        }
+    }
+}
