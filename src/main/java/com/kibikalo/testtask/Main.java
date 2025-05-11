@@ -7,11 +7,17 @@ import com.kibikalo.testtask.service.PaymentProcessor;
 import com.kibikalo.testtask.validation.DataValidator;
 
 import java.io.IOException;
+import java.math.RoundingMode;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.stream.Collectors;
+import java.math.BigDecimal;
 
 public class Main {
+
+    private static final String POINTS_PAYMENT_METHOD_ID = "PUNKTY";
+
     public static void main(String[] args) {
         if (args.length != 2) {
             System.err.println("Usage: java -jar payment-optimizer.jar <orders_json_path> <payment_methods_json_path>");
