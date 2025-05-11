@@ -38,30 +38,17 @@ public class Main {
 
             dataValidator.validateData(orders, paymentMethodsList);
 
-            System.out.println("Successfully loaded orders:");
-            orders.forEach(System.out::println);
-
-            System.out.println("\nSuccessfully loaded payment methods:");
-            paymentMethodsList.forEach(System.out::println);
-
-            // Sort orders by value in descending order
-            orders.sort(Comparator.comparing(Order::getValue).reversed());
-            System.out.println("\nOrders sorted by value (descending):");
-            orders.forEach(System.out::println);
-
             Map<String, PaymentMethod> paymentMethodsMap = paymentMethodsList.stream()
                     .collect(Collectors.toMap(PaymentMethod::getId, paymentMethod -> paymentMethod));
 
             System.out.println("\nPayment methods available for use (with initial limits):");
             paymentMethodsMap.values().forEach(System.out::println);
 
-
             PaymentProcessor paymentProcessor = new PaymentProcessor(paymentMethodsMap);
 
             // --- Use Backtracking Optimizer ---
             PaymentOptimizerService optimizer = new PaymentOptimizerService(orders, paymentMethodsMap, paymentProcessor);
             Map<String, BigDecimal> finalPaymentTotals = optimizer.solve();
-
 
             // Format and print finalPaymentTotals
             System.out.println("\n--- Final Payment Totals by Method (Backtracking) ---");
