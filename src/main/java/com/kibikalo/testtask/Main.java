@@ -3,20 +3,22 @@ package com.kibikalo.testtask;
 import com.kibikalo.testtask.io.DataLoader;
 import com.kibikalo.testtask.model.Order;
 import com.kibikalo.testtask.model.PaymentMethod;
+import com.kibikalo.testtask.service.PaymentOptimizerService;
 import com.kibikalo.testtask.service.PaymentProcessor;
 import com.kibikalo.testtask.validation.DataValidator;
 
 import java.io.IOException;
 import java.math.RoundingMode;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.stream.Collectors;
 import java.math.BigDecimal;
 
 public class Main {
 
-    private static final String POINTS_PAYMENT_METHOD_ID = "PUNKTY";
+    private static final int SCALE = 2; // Consistent scale for currency
+    private static final RoundingMode ROUNDING_MODE = RoundingMode.HALF_UP; // Consistent rounding mode
 
     public static void main(String[] args) {
         if (args.length != 2) {
@@ -42,6 +44,11 @@ public class Main {
             System.out.println("\nSuccessfully loaded payment methods:");
             paymentMethodsList.forEach(System.out::println);
 
+            // Sort orders by value in descending order
+            orders.sort(Comparator.comparing(Order::getValue).reversed());
+            System.out.println("\nOrders sorted by value (descending):");
+            orders.forEach(System.out::println);
+
             Map<String, PaymentMethod> paymentMethodsMap = paymentMethodsList.stream()
                     .collect(Collectors.toMap(PaymentMethod::getId, paymentMethod -> paymentMethod));
 
@@ -51,12 +58,48 @@ public class Main {
 
             PaymentProcessor paymentProcessor = new PaymentProcessor(paymentMethodsMap);
 
+            // Initialize the PaymentOptimizerService (contains the optimization algorithm)
+            PaymentOptimizerService optimizerService = new PaymentOptimizerService(paymentProcessor, paymentMethodsMap);
+
+            // Run the optimization algorithm
+            List<Order> unpaidOrders = optimizerService.optimizePayments(orders);
+
+
+            // Final check: ensure all orders are paid
+            if (!unpaidOrders.isEmpty()) {
+                System.err.println("\nWARNING: Not all orders were paid!");
+                System.err.println("Unpaid orders:");
+                unpaidOrders.forEach(order -> System.err.println("  " + order.getId() + " (Value: " + order.getValue() + ")"));
+            } else {
+                System.out.println("\nAll orders were successfully paid.");
+            }
+
+
+            // After the optimization logic is done, get the final totals from the PaymentProcessor:
+            Map<String, BigDecimal> finalPaymentTotals = paymentProcessor.getTotalAmountPaidByMethod();
+
+            // Format and print finalPaymentTotals
+            System.out.println("\n--- Final Payment Totals by Method ---");
+            if (finalPaymentTotals.isEmpty() || finalPaymentTotals.values().stream().allMatch(amount -> amount.compareTo(BigDecimal.ZERO) == 0)) {
+                System.out.println("No payments were processed.");
+            } else {
+                // Print in the required format: <id_metody> <wydana_kwota>
+                finalPaymentTotals.forEach((methodId, amount) -> {
+                    // Only print methods that were actually used
+                    if (amount.compareTo(BigDecimal.ZERO) > 0) {
+                        System.out.println(methodId + " " + amount.setScale(SCALE, ROUNDING_MODE));
+                    }
+                });
+            }
+            System.out.println("------------------------------------");
+
         } catch (IOException e) {
             System.err.println("Error loading data: " + e.getMessage());
             e.printStackTrace();
             System.exit(1);
         } catch (IllegalArgumentException e) {
             System.err.println("Data validation error: " + e.getMessage());
+            e.printStackTrace();
             System.exit(1);
         } catch (Exception e) {
             System.err.println("An unexpected error occurred: " + e.getMessage());
