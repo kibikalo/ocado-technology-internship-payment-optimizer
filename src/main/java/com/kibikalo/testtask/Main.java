@@ -3,6 +3,7 @@ package com.kibikalo.testtask;
 import com.kibikalo.testtask.io.DataLoader;
 import com.kibikalo.testtask.model.Order;
 import com.kibikalo.testtask.model.PaymentMethod;
+import com.kibikalo.testtask.service.PaymentProcessor;
 import com.kibikalo.testtask.validation.DataValidator;
 
 import java.io.IOException;
@@ -41,12 +42,19 @@ public class Main {
             System.out.println("\nPayment methods available for use (with initial limits):");
             paymentMethodsMap.values().forEach(System.out::println);
 
+
+            PaymentProcessor paymentProcessor = new PaymentProcessor(paymentMethodsMap);
+
         } catch (IOException e) {
             System.err.println("Error loading data: " + e.getMessage());
             e.printStackTrace();
             System.exit(1);
         } catch (IllegalArgumentException e) {
             System.err.println("Data validation error: " + e.getMessage());
+            System.exit(1);
+        } catch (Exception e) {
+            System.err.println("An unexpected error occurred: " + e.getMessage());
+            e.printStackTrace();
             System.exit(1);
         }
     }
